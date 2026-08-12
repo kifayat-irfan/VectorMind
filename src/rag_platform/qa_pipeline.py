@@ -62,26 +62,49 @@ SYSTEM_PROMPT = (
     "steps or explanation aren't written in the context, say the documentation doesn't "
     "cover it rather than reasoning your way to an answer. "
     "Cite sources inline using [n] markers that map to the numbered context blocks. "
-    "If earlier conversation turns are included, use them only to understand what the "
-    "user is currently asking about — never pull facts from your own prior answers "
-    "into this one unless those facts are also present in the numbered context blocks. "
-    "If the earlier turn was about a different topic than the current question, ignore "
-    "it entirely; do not mention, list, or combine it with the current topic in your "
-    "answer, even in passing."
+    "\n\n"
+    "FORMAT REQUIREMENTS (CRITICAL — FOLLOW EXACTLY):\n"
+    "- Start with a top-level heading (# Title) that captures the main question\n"
+    "- Use ## (H2) for major sections\n"
+    "- Use ### (H3) for subsections if needed\n"
+    "- Use **bold** for key terms, important names, and emphasized concepts\n"
+    "- Use bullet lists (- item) for unordered lists\n"
+    "- Use numbered lists (1. step) for sequential steps\n"
+    "- End with a ## Summary section that synthesizes the key takeaways\n"
+    "- Use markdown formatting consistently throughout the response"
 )
 
 CONDENSE_SYSTEM_PROMPT = (
-    "Rewrite the follow-up question as a standalone question that includes any "
-    "necessary context from the conversation history, so it makes sense on its "
-    "own with no prior messages. If it's already standalone, return it unchanged. "
-    "Respond with ONLY the rewritten question — no preamble, no quotes, no explanation."
+    "You are a question rewriter. Your task is to rewrite follow-up questions "
+    "as standalone questions that include any necessary context from the conversation history. "
+    "This is needed because the embedding model needs a complete, self-contained question to "
+    "perform accurate semantic search.\n\n"
+    "STRICT FORMAT REQUIREMENTS:\n"
+    "1. Output ONLY the rewritten question — NO preamble, NO quotes, NO explanation, NO prefix\n"
+    "2. Do NOT say 'Sure!', 'Here is the rewritten question:', or any similar introduction\n"
+    "3. Do NOT wrap the output in quotes, brackets, or any formatting\n"
+    "4. If the question is already standalone, return it EXACTLY as-is, unchanged\n"
+    "5. If it's a follow-up (uses 'it', 'this', 'that', 'how do I fix it'), expand it with context from history\n"
+    "6. Preserve the original language of the question (English stays English, etc.)\n"
+    "7. Keep the rewritten question concise — don't add unnecessary words\n\n"
+    "EXAMPLES:\n"
+    "- History: Q='What is the attendance workflow?' A='Teachers mark attendance...'\n"
+    "  Follow-up: 'How do they do it?'\n"
+    "  Rewritten: 'How do teachers mark attendance?'\n\n"
+    "- History: Q='Tell me about grading' A='Teachers can edit grades...'\n"
+    "  Follow-up: 'What about the final exam?'\n"
+    "  Rewritten: 'What about the final exam grades?'\n\n"
+    "- Standalone: 'What is chunk_size?'\n"
+    "  Output: 'What is chunk_size?' (unchanged)\n\n"
+    "Now rewrite the follow-up question. Output ONLY the question text."
 )
 
-DEFAULT_MAX_SCORE_GAP = 6.0  # chunks scoring this many points below THIS QUERY'S best match are dropped
-DEFAULT_HISTORY_TURNS_FOR_CONDENSING = 3  # how many prior (question, answer) pairs to show the condenser
-DEFAULT_HISTORY_TURNS_FOR_GENERATION = 1  # only the immediately preceding turn — see design note below
 
-ConversationTurn = tuple[str, str]  # (question, answer)
+DEFAULT_MAX_SCORE_GAP = 6.0
+DEFAULT_HISTORY_TURNS_FOR_CONDENSING = 3
+DEFAULT_HISTORY_TURNS_FOR_GENERATION = 1
+
+ConversationTurn = tuple[str, str]
 
 
 @dataclass
@@ -97,29 +120,11 @@ class Citation:
 class QAResult:
     question: str
     answer: str
-    citations: list[Citation]
-    standalone_question: Optional[str] = None  # set only if a follow-up was rewritten for retrieval
+    citations: list
+    standalone_question: Optional[str] = None
 
 
 class QAPipeline:
-    """
-    Args:
-        retriever: This tenant's HybridRetriever (already scoped to the
-            correct company's vector store — see scripts/query_company.py).
-        reranker: Optional; pass None to skip reranking (faster, slightly
-            lower precision — controlled by Settings.use_reranker).
-        llm_client: LLM used for final answer generation (and query condensing).
-        rerank_top_k: How many reranked chunks to feed the LLM.
-        max_score_gap: Chunks scoring more than this many points below the
-            top-ranked chunk *for this same query* are dropped, even if
-            that leaves fewer than rerank_top_k chunks. The top match is
-            always kept — this filters out chunks the reranker considers
-            much worse than its own best answer, without relying on an
-            absolute score threshold that doesn't hold across different
-            queries. Only applied when a reranker is in use, since raw RRF
-            scores aren't on a comparable scale. Set to None to disable.
-    """
-
     def __init__(
         self,
         retriever: HybridRetriever,
@@ -140,16 +145,7 @@ class QAPipeline:
         where: Optional[dict[str, Any]] = None,
         conversation_history: Optional[list[ConversationTurn]] = None,
     ) -> QAResult:
-        """
-        Args:
-            question: The user's current message, verbatim.
-            where: Optional metadata filter passed through to retrieval.
-            conversation_history: Prior (question, answer) turns in this
-                chat session, oldest first. Pass None or [] for a
-                single-shot question with no conversational context.
-        """
         history = conversation_history or []
-
         standalone_question = question
         if history:
             standalone_question = await self._condense_question(question, history)
@@ -211,14 +207,13 @@ class QAPipeline:
         )
 
     async def _condense_question(self, question: str, history: list[ConversationTurn]) -> str:
-        """Rewrites a possibly-context-dependent follow-up into a standalone question for retrieval."""
         recent = history[-DEFAULT_HISTORY_TURNS_FOR_CONDENSING:]
         history_text = "\n\n".join(f"Q: {q}\nA: {a}" for q, a in recent)
         prompt = f"Conversation history:\n{history_text}\n\nFollow-up question: {question}\n\nStandalone question:"
 
         try:
             rewritten = await self.llm_client.generate(prompt, system=CONDENSE_SYSTEM_PROMPT, temperature=0.0)
-        except Exception:  # noqa: BLE001 — condensing is a nice-to-have; never let it break the whole answer
+        except Exception:
             return question
 
         rewritten = rewritten.strip().strip('"')

@@ -4,6 +4,12 @@ match), fused with Reciprocal Rank Fusion (RRF).
 
 RRF, not a raw score blend, because cosine similarity and BM25 scores live
 on incompatible scales — RRF fuses on rank position, sidestepping that.
+
+Multi-query expansion: bare questions often miss relevant chunks because
+the user's vocabulary doesn't match the docs. Generate 2-3 synonym variants
+of the question, retrieve for each, then merge all results via RRF. This
+recalls more chunks than single-query retrieval, especially when the
+question uses different terminology than the documentation.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from rank_bm25 import BM25Okapi
 
 from rag_platform.embedder import Embedder
 from rag_platform.vector_store import VectorStore
+from rag_platform.query_expander import expand_query
 
 
 def _tokenize(text: str) -> list[str]:
@@ -61,6 +68,7 @@ class HybridRetriever:
         top_k_final: Candidates returned after RRF fusion.
         rrf_k: RRF constant (higher = flatter weighting of rank position; 60 is the common default).
         use_bm25: If False, skip BM25 entirely and return dense-only results (still RRF-ranked for consistency).
+        use_multi_query: If True, expand query to variants and merge results via RRF (better recall).
     """
 
     def __init__(
@@ -72,6 +80,7 @@ class HybridRetriever:
         top_k_final: int = 5,
         rrf_k: int = 60,
         use_bm25: bool = True,
+        use_multi_query: bool = True,
     ):
         self.embedder = embedder
         self.vector_store = vector_store
@@ -81,41 +90,78 @@ class HybridRetriever:
         self.top_k_final = top_k_final
         self.rrf_k = rrf_k
         self.use_bm25 = use_bm25
+        self.use_multi_query = use_multi_query
 
     def refresh_bm25(self) -> None:
         self.bm25_index.build(self.vector_store.get_all_documents())
 
     def search(self, query: str, where: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
-        query_vector = self.embedder.embed_query(query)
-        dense_hits = self.vector_store.query(query_vector, top_k=self.top_k_dense, where=where)
+        # Multi-query expansion: get variants
+        if self.use_multi_query:
+            variants = expand_query(query)
+        else:
+            variants = [query]
 
-        bm25_hits: list[dict[str, Any]] = []
-        if self.use_bm25:
-            if not self.bm25_index.is_built():
-                self.refresh_bm25()
-            bm25_hits = self.bm25_index.search(query, top_k=self.top_k_bm25)
+        # Retrieve for each variant and merge via RRF
+        all_dense_lists = []
+        all_bm25_lists = []
 
-        fused = self._reciprocal_rank_fusion(dense_hits, bm25_hits)
+        for variant in variants:
+            # Dense search
+            query_vector = self.embedder.embed_query(variant)
+            dense_hits = self.vector_store.query(query_vector, top_k=self.top_k_dense, where=where)
+            all_dense_lists.append(dense_hits)
+
+            # BM25 search
+            if self.use_bm25:
+                if not self.bm25_index.is_built():
+                    self.refresh_bm25()
+                bm25_hits = self.bm25_index.search(variant, top_k=self.top_k_bm25)
+                all_bm25_lists.append(bm25_hits)
+
+        # Merge all variants via RRF
+        fused = self._multi_variant_rrf(all_dense_lists, all_bm25_lists)
         return fused[: self.top_k_final]
+
+    def _multi_variant_rrf(
+        self,
+        dense_lists: list[list[dict[str, Any]]],
+        bm25_lists: list[list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        """
+        Reciprocal Rank Fusion across multiple query variants and search methods.
+        Each (variant, method) combination contributes to the final score.
+        """
+        scores: dict[str, float] = {}
+        payload: dict[str, dict[str, Any]] = {}
+
+        # Score from all dense variants
+        for dense_hits in dense_lists:
+            for rank, hit in enumerate(dense_hits):
+                hit_id = hit["id"]
+                scores[hit_id] = scores.get(hit_id, 0.0) + 1.0 / (self.rrf_k + rank + 1)
+                payload[hit_id] = hit
+
+        # Score from all BM25 variants
+        for bm25_hits in bm25_lists:
+            for rank, hit in enumerate(bm25_hits):
+                hit_id = hit["id"]
+                scores[hit_id] = scores.get(hit_id, 0.0) + 1.0 / (self.rrf_k + rank + 1)
+                payload.setdefault(hit_id, hit)
+
+        # Sort by RRF score
+        ranked_ids = sorted(scores.keys(), key=lambda i: scores[i], reverse=True)
+
+        results = []
+        for hit_id in ranked_ids:
+            item = dict(payload[hit_id])
+            item["rrf_score"] = scores[hit_id]
+            results.append(item)
+
+        return results
 
     def _reciprocal_rank_fusion(
         self, dense_hits: list[dict[str, Any]], bm25_hits: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        scores: dict[str, float] = {}
-        payload: dict[str, dict[str, Any]] = {}
-
-        for rank, hit in enumerate(dense_hits):
-            scores[hit["id"]] = scores.get(hit["id"], 0.0) + 1.0 / (self.rrf_k + rank + 1)
-            payload[hit["id"]] = hit
-
-        for rank, hit in enumerate(bm25_hits):
-            scores[hit["id"]] = scores.get(hit["id"], 0.0) + 1.0 / (self.rrf_k + rank + 1)
-            payload.setdefault(hit["id"], hit)
-
-        ranked_ids = sorted(scores.keys(), key=lambda i: scores[i], reverse=True)
-        results = []
-        for i in ranked_ids:
-            item = dict(payload[i])
-            item["rrf_score"] = scores[i]
-            results.append(item)
-        return results
+        """Legacy RRF (kept for backward compatibility, not used by default)."""
+        return self._multi_variant_rrf([dense_hits], [bm25_hits])
