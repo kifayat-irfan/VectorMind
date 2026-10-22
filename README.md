@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-41%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-42%20passing-brightgreen)
 ![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED)
 
@@ -306,7 +306,7 @@ make test
 PYTHONPATH=src pytest tests/ -v
 ```
 
-41 tests across 6 files, all passing:
+42 tests across 6 files, all passing:
 - `test_pdf_extractor.py` — heading/code-block detection, page markers, scanned-PDF flagging
 - `test_company_registry.py` — add/list/info/remove/duplicate/not-found
 - `test_config_loader.py` — YAML template inheritance, validation errors, tenant isolation
