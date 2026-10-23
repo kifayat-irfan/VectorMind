@@ -2,17 +2,20 @@
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-42%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-49%20passing-brightgreen)
 ![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED)
+[![Live Demo](https://img.shields.io/badge/demo-live-success)](https://bkoxhezgya3iddj6xdkdyc.streamlit.app/)
+
+**🚀 [Try the live demo](https://bkoxhezgya3iddj6xdkdyc.streamlit.app/)** — ask questions about FastAPI documentation with page-accurate citations.
 
 A local-first, offline-capable RAG (Retrieval-Augmented Generation) platform
 for company engineering documentation. Ingests PDFs, isolates data per
 company, and answers questions with page-accurate citations. Runs fully
-offline via Ollama by default, with optional Groq fallback (free tier) for
-voice input and public deployments.
+offline via Ollama by default, with SenseNova cloud fallback for
+public deployments.
 
-**[Screenshots below](#screenshots) · Built with pypdf, pdfplumber, BGE embeddings, ChromaDB, BM25, cross-encoder reranking, Ollama, Groq, and Streamlit**
+**[Screenshots below](#screenshots) · Built with pypdf, pdfplumber, BGE embeddings, ChromaDB, BM25, cross-encoder reranking, Ollama, SenseNova, and Streamlit**
 
 ## Screenshots
 
@@ -52,7 +55,7 @@ voice input and public deployments.
    query  ──▶  retriever.py (dense + BM25, RRF)  ──▶  reranker.py (cross-encoder)
                                                           │
                                                           ▼
-                                          qa_pipeline.py  ──▶  llm.py (Ollama / Groq)
+                                          qa_pipeline.py  ──▶  llm.py (Ollama / SenseNova)
                                           (retrieve → rerank → generate → cite)
 ```
 
@@ -78,7 +81,7 @@ Enterprise_RAG_Platform/
 │   ├── vector_store.py       # ChromaDB, one instance per company
 │   ├── retriever.py          # BM25 + dense hybrid search (RRF)
 │   ├── reranker.py           # cross-encoder reranking
-│   ├── llm.py                # Ollama client (Local mode) + Groq client (Public mode)
+│   ├── llm.py                # Ollama client (Local mode) + SenseNova client (Public mode)
 │   ├── qa_pipeline.py        # retrieve → rerank → generate → cite
 │   ├── company_registry.py   # company CRUD over registry.json
 │   ├── cache.py              # in-memory TTL+LRU query cache (cachetools)
@@ -229,7 +232,7 @@ Opens at `http://localhost:8501`. Three tabs once a company is selected:
   (needs a free [Groq API key](https://console.groq.com/keys) — see below).
   Retrieval + citations work with no setup; check "Generate LLM answer" to
   also generate a synthesized response. Two LLM modes: **🔒 Local** (Ollama,
-  fully offline) or **🌐 Public** (Groq's hosted LLM, free tier — works even
+  fully offline) or **🌐 Public** (SenseNova's hosted LLM — works even
   without a local Ollama, e.g. on a deployed demo). Switch per-question.
   Follow-up questions ("how do I fix it?") are automatically rewritten
   using recent conversation history before retrieval, so they don't need
@@ -306,13 +309,28 @@ make test
 PYTHONPATH=src pytest tests/ -v
 ```
 
-42 tests across 6 files, all passing:
+49 tests across 7 files, all passing:
 - `test_pdf_extractor.py` — heading/code-block detection, page markers, scanned-PDF flagging
 - `test_company_registry.py` — add/list/info/remove/duplicate/not-found
 - `test_config_loader.py` — YAML template inheritance, validation errors, tenant isolation
 - `test_integration.py` — full pipeline (extract → chunk → index → retrieve) against a synthetic reportlab-generated PDF, plus scanned-PDF skip behavior
 - `test_chat_history_and_cache.py` — chat history isolation/search/star/delete, cache hit/miss behavior
 - `test_qa_pipeline.py` — relevance-gap filtering against cross-chunk hallucination, system prompt guardrails, multi-turn query condensing
+- `test_regressions.py` — page-attribution accuracy (no citation drift), stale-version cleanup on re-ingest, multi-tenant retrieval isolation, corrupt-registry handling
+
+## Validated on Real Documentation
+
+Tested end-to-end on **828 PDFs / 9,107 chunks** across 5 companies:
+
+| Company | PDFs | Chunks |
+|---------|------|--------|
+| FastAPI | 51 | 900 |
+| Vue.js | 108 | 1,244 |
+| Nuxt | 284 | 1,512 |
+| Vite | 24 | 378 |
+| VS Code | 361 | 5,073 |
+
+**13 hard questions** stress-tested (multi-hop reasoning, nuanced comparisons like `ref` vs `reactive` vs `shallowRef`, edge cases like `response_model` extra-field filtering): all answered accurately with page-numbered citations. **Zero hallucination** — on unanswerable questions (e.g. "Does FastAPI support GraphQL subscriptions?"), the system honestly reports the docs don't cover it instead of inventing an answer.
 
 Integration and unit tests use a deterministic fake embedder instead of
 downloading the real BGE model, so the suite runs fully offline and in
