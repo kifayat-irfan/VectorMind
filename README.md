@@ -5,9 +5,9 @@
 ![Tests](https://img.shields.io/badge/tests-49%20passing-brightgreen)
 ![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED)
-[![Live Demo](https://img.shields.io/badge/demo-live-success)](https://bkoxhezgya3iddj6xdkdyc.streamlit.app/)
+[![Live Demo](https://img.shields.io/badge/demo-live-success)](https://vectormind-ai.streamlit.app/)
 
-**🚀 [Try the live demo](https://bkoxhezgya3iddj6xdkdyc.streamlit.app/)** — ask questions about FastAPI documentation with page-accurate citations.
+**🚀 [Try the live demo](https://vectormind-ai.streamlit.app/)** — ask questions about FastAPI documentation with page-accurate citations.
 
 A local-first, offline-capable RAG (Retrieval-Augmented Generation) platform
 for company engineering documentation. Ingests PDFs, isolates data per
