@@ -15,9 +15,15 @@ data/companies/*/vector_store/
 data/registry.json
 data/chat_history.sqlite3
 
+# Demo bundle for Streamlit Cloud (pre-built FastAPI vector store) — COMMITTED
+!demo/
+!demo/**
+
 # Actual per-company configs may contain internal paths/naming — keep the
 # template tracked, but don't force company configs into version control.
 configs/*.yaml
+# ... except the FastAPI demo config, which the Streamlit Cloud demo needs.
+!configs/fastapi.yaml
 !configs/template.yaml
 
 .env

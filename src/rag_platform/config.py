@@ -133,10 +133,14 @@ class Settings(BaseSettings):
 
         if self.configs_dir is None:
             object.__setattr__(self, "configs_dir", self.project_root / "configs")
-        if self.registry_path is None:
-            object.__setattr__(self, "registry_path", self.project_root / "data" / "registry.json")
 
-        base = self.project_root / "data" / "companies" / self.company_id
+        # VECTORMIND_DATA_DIR overrides the data root (used for the Streamlit
+        # Cloud demo, which ships a pre-built vector store under demo/).
+        data_root = Path(os.environ.get("VECTORMIND_DATA_DIR", self.project_root / "data"))
+        if self.registry_path is None:
+            object.__setattr__(self, "registry_path", data_root / "registry.json")
+
+        base = data_root / "companies" / self.company_id
 
         if self.data_dir is None:
             object.__setattr__(self, "data_dir", base)

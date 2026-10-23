@@ -1,0 +1,1 @@
+{"version": 1, "companies": {"fastapi": {"company_id": "fastapi", "name": "FastAPI", "config_path": "configs/fastapi.yaml", "data_path": "demo/companies/fastapi", "total_pdfs": 51, "total_chunks": 900}}}
