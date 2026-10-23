@@ -24,7 +24,7 @@ history baked in:
 
 Deployment note: on Streamlit Community Cloud there is no local Ollama —
 retrieval + reranking + citations work everywhere with no setup; "Generate
-LLM answer" in Local mode needs a reachable Ollama, Public mode (Groq) works
+LLM answer" in Local mode needs a reachable Ollama, Public mode (SenseNova) works
 anywhere with an API key.
 """
 
@@ -53,7 +53,7 @@ from rag_platform.company_registry import (  # noqa: E402
 from rag_platform.config import Settings, get_settings  # noqa: E402
 from rag_platform.config_loader import ConfigValidationError, load_company_config  # noqa: E402
 from rag_platform.embedder import Embedder  # noqa: E402
-from rag_platform.llm import GroqLLMClient, OllamaClient  # noqa: E402
+from rag_platform.llm import OllamaClient, SenseNovaLLMClient  # noqa: E402
 from rag_platform.manifest import ManifestStore  # noqa: E402
 from rag_platform.qa_pipeline import DEFAULT_MAX_SCORE_GAP, QAPipeline, apply_score_gap_filter  # noqa: E402
 from rag_platform.reranker import CrossEncoderReranker  # noqa: E402
@@ -447,8 +447,8 @@ def answer_question(
     llm_mode: str = "local",
     ollama_url: str = "",
     ollama_model: str = "",
-    groq_api_key: str = "",
-    groq_model: str = "",
+    sensenova_api_key: str = "",
+    sensenova_model: str = "",
     use_cache: bool = True,
     conversation_history: Optional[list[tuple[str, str]]] = None,
 ) -> tuple[str, list[dict]]:
@@ -456,7 +456,7 @@ def answer_question(
     effective_use_cache = use_cache and not history
 
     cache = get_cache(maxsize=256, ttl_seconds=3600)
-    key = cache_key(company_id, question, top_k, use_llm, llm_mode, ollama_model, groq_model)
+    key = cache_key(company_id, question, top_k, use_llm, llm_mode, ollama_model, sensenova_model)
 
     def compute():
         # H4: one cached retriever per company — no more per-question
@@ -485,8 +485,8 @@ def answer_question(
             return {"answer": answer, "citations": citations}
 
         if llm_mode == "public":
-            llm = GroqLLMClient(api_key=groq_api_key, model=groq_model)
-            backend_label = f"Groq ({groq_model})"
+            llm = SenseNovaLLMClient(api_key=sensenova_api_key, model=sensenova_model)
+            backend_label = f"SenseNova ({sensenova_model})"
         else:
             llm = OllamaClient(base_url=ollama_url, model=ollama_model)
             backend_label = f"Ollama ({ollama_model}) at {ollama_url}"
@@ -626,12 +626,12 @@ def render_chat(company_id: str) -> None:
     with col2:
         top_k = st.slider("Chunks to retrieve", min_value=3, max_value=15, value=8, key=f"topk_{company_id}")
 
-    ollama_url, ollama_model, groq_model = settings.ollama_base_url, settings.ollama_model, settings.groq_llm_model
+    ollama_url, ollama_model, sensenova_model = settings.ollama_base_url, settings.ollama_model, settings.sensenova_llm_model
     llm_mode = "local"
     if use_llm:
         llm_mode = st.radio(
             "LLM mode", options=["local", "public"],
-            format_func=lambda m: "🔒 Local (Ollama)" if m == "local" else "🌐 Public (Groq)",
+            format_func=lambda m: "🔒 Local (Ollama)" if m == "local" else "🌐 Public (SenseNova)",
             horizontal=True, key=f"mode_{company_id}",
         )
         if llm_mode == "local":
@@ -639,10 +639,10 @@ def render_chat(company_id: str) -> None:
                 ollama_url = st.text_input("Ollama base URL", value=settings.ollama_base_url, key=f"url_{company_id}")
                 ollama_model = st.text_input("Ollama model", value=settings.ollama_model, key=f"model_{company_id}")
         else:
-            with st.expander("Groq settings"):
-                groq_model = st.text_input("Groq model", value=settings.groq_llm_model, key=f"groqmodel_{company_id}")
-                if not settings.groq_api_key:
-                    st.warning("No GROQ_API_KEY set — add one to your .env to use Public mode.")
+            with st.expander("SenseNova settings"):
+                sensenova_model = st.text_input("SenseNova model", value=settings.sensenova_llm_model, key=f"snmodel_{company_id}")
+                if not settings.sensenova_api_key:
+                    st.info("No SENSENOVA_API_KEY set — using the connected SenseNova credential on this machine. For Streamlit Cloud, add the key to app secrets.")
 
     history_key = f"messages_{company_id}"
     if history_key not in st.session_state:
@@ -685,7 +685,7 @@ def render_chat(company_id: str) -> None:
             answer, citations = answer_question(
                 company_id, company_config, vector_store, question, top_k, use_llm,
                 llm_mode=llm_mode, ollama_url=ollama_url, ollama_model=ollama_model,
-                groq_api_key=settings.groq_api_key, groq_model=groq_model,
+                sensenova_api_key=settings.sensenova_api_key, sensenova_model=sensenova_model,
                 conversation_history=conversation_history,
             )
         st.markdown(answer)
@@ -776,7 +776,7 @@ def main() -> None:
             - 🎯 **Relevance-gap filter** — tuned from real production testing, not guesswork
             - 💬 **Multi-turn memory** — follow-ups like "how do I fix it?" just work
             - 🎙️ **Voice input**, 📊 **cross-company comparison**, 📜 **searchable chat history**
-            - 🏠 **Runs offline** via Ollama, with Groq cloud fallback for public deployments
+            - 🏠 **Runs offline** via Ollama, with SenseNova cloud fallback for public deployments
 
             👈 **Pick a company in the sidebar** to start asking questions.
             """

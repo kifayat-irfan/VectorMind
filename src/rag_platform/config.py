@@ -74,10 +74,17 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
 
-    # --- Groq (optional, free-tier voice transcription + Public LLM mode) ----
+    # --- Groq (optional, free-tier voice transcription only) ------------------
     groq_api_key: str = ""  # set via GROQ_API_KEY env or RAG_GROQ_API_KEY
     groq_whisper_model: str = "whisper-large-v3-turbo"
-    groq_llm_model: str = "llama-3.3-70b-versatile"
+    groq_llm_model: str = "llama-3.3-70b-versatile"  # legacy; SenseNova is the Public LLM now
+
+    # --- SenseNova (Public LLM mode — replaced Groq 2026-10-23) ---------------
+    # No key needed on machines with the connected custom.sensenova credential
+    # (the client uses it automatically). For deployed demos, set the key via
+    # SENSENOVA_API_KEY env or Streamlit secrets.
+    sensenova_api_key: str = ""  # set via SENSENOVA_API_KEY env or RAG_SENSENOVA_API_KEY
+    sensenova_llm_model: str = "sensenova-6.8-flash-lite"
 
     # --- Caching ---------------------------------------------------------------
     cache_ttl_seconds: int = 3600
@@ -115,6 +122,12 @@ class Settings(BaseSettings):
 
         if not self.groq_api_key:
             object.__setattr__(self, "groq_api_key", os.environ.get("GROQ_API_KEY", ""))
+        if not self.sensenova_api_key:
+            object.__setattr__(
+                self,
+                "sensenova_api_key",
+                os.environ.get("SENSENOVA_API_KEY", os.environ.get("RAG_SENSENOVA_API_KEY", "")),
+            )
         if self.chat_history_db_path is None:
             object.__setattr__(self, "chat_history_db_path", self.project_root / "data" / "chat_history.sqlite3")
 
