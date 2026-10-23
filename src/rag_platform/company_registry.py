@@ -15,6 +15,7 @@ that swapping the storage backend wouldn't touch calling code.
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -46,6 +47,13 @@ class CompanyNotFoundError(Exception):
     pass
 
 
+class RegistryCorruptError(Exception):
+    """Raised when registry.json can't be parsed. The corrupt file is backed
+    up; callers must not silently proceed with an empty registry."""
+
+    pass
+
+
 class CompanyRegistry:
     """
     Args:
@@ -62,10 +70,25 @@ class CompanyRegistry:
         try:
             data = json.loads(self.registry_path.read_text(encoding="utf-8"))
             return Registry.model_validate(data)
-        except (json.JSONDecodeError, ValueError):
-            # A corrupt registry file must never crash every company's tooling —
-            # treat it as empty and let the next write repair it.
-            return Registry()
+        except (json.JSONDecodeError, ValueError) as exc:
+            # H6 fix: a corrupt registry must NEVER be silently treated as
+            # empty — the next write would then overwrite the file with only
+            # the new data, permanently forgetting every registered company.
+            # Back the corrupt file up and refuse to proceed until a human
+            # looks at it.
+            import time
+
+            backup = self.registry_path.with_name(
+                f"{self.registry_path.name}.corrupt.{int(time.time())}"
+            )
+            try:
+                shutil.copy2(self.registry_path, backup)
+            except OSError:
+                pass
+            raise RegistryCorruptError(
+                f"registry.json is corrupt ({exc}); backed up to {backup}. "
+                "Fix or remove the corrupt file before continuing."
+            ) from exc
 
     def _save(self, registry: Registry) -> None:
         """Atomic write: .tmp then rename, so a crash mid-write never corrupts registry.json."""

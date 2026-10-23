@@ -34,16 +34,27 @@ def test_chat_history_search(chat_store: ChatHistoryStore):
 def test_chat_history_star_and_delete(chat_store: ChatHistoryStore):
     entry_id = chat_store.add("gitlab", "q", "a", [])
 
-    chat_store.toggle_star(entry_id)
+    chat_store.toggle_star(entry_id, "gitlab")
     entries = chat_store.list_for_company("gitlab")
     assert entries[0].starred is True
 
-    chat_store.toggle_star(entry_id)
+    chat_store.toggle_star(entry_id, "gitlab")
     entries = chat_store.list_for_company("gitlab")
     assert entries[0].starred is False
 
-    chat_store.delete(entry_id)
+    chat_store.delete(entry_id, "gitlab")
     assert len(chat_store.list_for_company("gitlab")) == 0
+
+
+def test_chat_history_cross_tenant_mutation_blocked(chat_store: ChatHistoryStore):
+    """H7 regression: one tenant must not star/delete another's entries."""
+    entry_id = chat_store.add("gitlab", "q", "a", [])
+
+    assert chat_store.toggle_star(entry_id, "basecamp") is False
+    assert chat_store.list_for_company("gitlab")[0].starred is False
+
+    assert chat_store.delete(entry_id, "basecamp") is False
+    assert len(chat_store.list_for_company("gitlab")) == 1
 
 
 def test_chat_history_persists_citations(chat_store: ChatHistoryStore):

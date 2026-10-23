@@ -83,25 +83,19 @@ class RecursiveCharacterChunker:
         text_no_markers = PAGE_MARKER_RE.sub("", markdown)
 
         segments = self._split_preserving_code_blocks(text_no_markers)
-        merged = self._merge_with_overlap(segments)
+        # H1 FIX: attribute page numbers to segments BEFORE merging.
+        # The old code advanced a cursor over the merged pieces, but merged
+        # pieces duplicate the overlap region — so the cursor ran ahead of
+        # the true text offsets and page numbers drifted forward (+1 page
+        # per ~50 chunks on long documents; 28/50 wrong on a 10-page test).
+        seg_pages = self._pages_for_segments(segments, text_no_markers, page_positions)
+        merged = self._merge_with_overlap(list(zip(segments, seg_pages)))
 
         chunks: list[Chunk] = []
-        cursor = 0
-        for piece in merged:
+        for piece, page_number in merged:
             is_code = piece.strip().startswith("```") and piece.strip().endswith("```")
-            # Use the offset of the piece's first non-whitespace character, not
-            # the raw piece boundary. A page marker like <!-- page:2 --> leaves
-            # behind a few characters of blank-line padding when stripped, and
-            # a chunk boundary can land inside that padding — a couple chars
-            # "before" the marker's own offset even though the chunk's real
-            # content is entirely on the later page. Skipping leading
-            # whitespace before the lookup avoids attributing that chunk to
-            # the earlier page by a false margin of just a few characters.
-            leading_ws = len(piece) - len(piece.lstrip())
-            page_number = self._page_for_offset(cursor + leading_ws, page_positions)
             stripped = piece.strip()
             if len(stripped) < self.min_chunk_length:
-                cursor += len(piece)
                 continue
             chunks.append(
                 Chunk(
@@ -112,9 +106,31 @@ class RecursiveCharacterChunker:
                     metadata=dict(metadata or {}),
                 )
             )
-            cursor += len(piece)
 
         return chunks
+
+    def _pages_for_segments(
+        self,
+        segments: list[str],
+        text_no_markers: str,
+        page_positions: list[tuple[int, int]],
+    ) -> list[Optional[int]]:
+        """Page number for each pre-merge segment, from its true offset in
+        the marker-stripped text. Segments are walked in order, so each
+        `find` starts where the previous segment ended."""
+        pages: list[Optional[int]] = []
+        search_from = 0
+        for seg in segments:
+            idx = text_no_markers.find(seg, search_from)
+            if idx == -1:
+                idx = search_from  # shouldn't happen; keep cursor monotonic
+            else:
+                search_from = idx + len(seg)
+            # Same leading-whitespace rule as before: a chunk boundary can
+            # land in the blank padding a stripped marker leaves behind.
+            leading_ws = len(seg) - len(seg.lstrip())
+            pages.append(self._page_for_offset(idx + leading_ws, page_positions))
+        return pages
 
     # ------------------------------------------------------------------ #
     # Page number tracking
@@ -221,8 +237,18 @@ class RecursiveCharacterChunker:
 
         return [r for r in results if r.strip()]
 
-    def _merge_with_overlap(self, pieces: list[str]) -> list[str]:
+    def _merge_with_overlap(self, segments: list[tuple[str, Optional[int]]]) -> list[tuple[str, Optional[int]]]:
         """
+        Args:
+            segments: (text, page_number) pairs from the pre-merge stream —
+                page numbers were assigned from true text offsets in split().
+
+        Returns:
+            (merged_text, page_number) pairs. Each merged chunk takes the
+            page of the first segment contributing non-overlap content; the
+            overlap tail is just context carried forward, not the chunk's
+            substantive start.
+
         Note the code-block branch flushes `current` immediately and pushes
         the code block directly to `merged`, then resets current="" — it
         never sits in `current` waiting to combine with the next piece.
@@ -232,33 +258,39 @@ class RecursiveCharacterChunker:
         block and leak it into the following chunk. Flushing immediately
         means overlap_text is only ever computed from plain-text `current`.
         """
-        if not pieces:
+        if not segments:
             return []
 
-        merged: list[str] = []
+        merged: list[tuple[str, Optional[int]]] = []
         current = ""
-        for piece in pieces:
+        current_page: Optional[int] = None
+        for piece, page in segments:
             is_atomic_code = piece.strip().startswith("```") and piece.strip().endswith("```")
 
             if is_atomic_code:
                 if current:
-                    merged.append(current)
-                merged.append(piece)
+                    merged.append((current, current_page))
+                merged.append((piece, page))
                 current = ""
+                current_page = None
                 continue
 
             candidate = (current + piece) if current else piece
             if len(candidate) <= self.chunk_size:
+                if not current:
+                    current_page = page
                 current = candidate
             else:
                 if current:
-                    merged.append(current)
+                    merged.append((current, current_page))
                 overlap_text = current[-self.chunk_overlap :] if current else ""
                 current = (overlap_text + piece) if overlap_text else piece
+                current_page = page
                 if len(current) > self.chunk_size * 1.5:
-                    merged.append(current[: self.chunk_size])
+                    merged.append((current[: self.chunk_size], current_page))
                     current = current[self.chunk_size - self.chunk_overlap :]
+                    # second half is a continuation of the same chunk's page
         if current:
-            merged.append(current)
+            merged.append((current, current_page))
 
         return merged

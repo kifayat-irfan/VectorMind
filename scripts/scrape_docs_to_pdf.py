@@ -40,6 +40,22 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 
+def _proxy_config() -> dict | None:
+    """Build a Playwright proxy config from standard env vars (if set)."""
+    import os
+
+    raw = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or os.environ.get("HTTP_PROXY")
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    cfg: dict = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+    if parsed.username:
+        cfg["username"] = parsed.username
+    if parsed.password:
+        cfg["password"] = parsed.password
+    return cfg
+
+
 def sanitize_filename(url: str) -> str:
     path = urlparse(url).path.strip("/") or "index"
     safe = re.sub(r"[^a-zA-Z0-9\-_/]", "_", path).replace("/", "__")
@@ -81,7 +97,12 @@ async def crawl_and_save(start_url: str, prefix: str, out_dir: Path, max_pages: 
     saved: list[str] = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        launch_kwargs: dict = {}
+        proxy = _proxy_config()
+        if proxy:
+            launch_kwargs["proxy"] = proxy
+            print("  (using egress proxy from environment)")
+        browser = await p.chromium.launch(**launch_kwargs)
         semaphore = asyncio.Semaphore(concurrency)
 
         async def visit(url: str) -> list[str]:

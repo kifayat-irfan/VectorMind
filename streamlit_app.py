@@ -31,6 +31,7 @@ anywhere with an API key.
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -54,7 +55,7 @@ from rag_platform.config_loader import ConfigValidationError, load_company_confi
 from rag_platform.embedder import Embedder  # noqa: E402
 from rag_platform.llm import GroqLLMClient, OllamaClient  # noqa: E402
 from rag_platform.manifest import ManifestStore  # noqa: E402
-from rag_platform.qa_pipeline import QAPipeline  # noqa: E402
+from rag_platform.qa_pipeline import DEFAULT_MAX_SCORE_GAP, QAPipeline, apply_score_gap_filter  # noqa: E402
 from rag_platform.reranker import CrossEncoderReranker  # noqa: E402
 from rag_platform.retriever import HybridRetriever  # noqa: E402
 from rag_platform.vector_store import VectorStore  # noqa: E402
@@ -215,6 +216,46 @@ def get_vector_store(vector_db_dir: str, collection_name: str) -> VectorStore:
     return VectorStore(Path(vector_db_dir), collection_name)
 
 
+@st.cache_resource
+def get_retriever(
+    company_id: str,
+    embedding_model: str,
+    embedding_device: str,
+    vector_db_dir: str,
+    collection_name: str,
+    top_k_dense: int,
+    top_k_bm25: int,
+    top_k_final: int,
+    use_bm25: bool,
+) -> HybridRetriever:
+    """One retriever per company, cached across Streamlit reruns (H4 fix).
+
+    Previously a new HybridRetriever was constructed per question, and each
+    construction triggered refresh_bm25() -> a full collection scan plus a
+    BM25 rebuild from scratch. At 10 companies x dozens of PDFs that's
+    seconds of overhead per question. Now the BM25 index builds once and is
+    refreshed only after ingestion (see invalidate_retriever).
+    """
+    embedder = get_embedder(embedding_model, embedding_device)
+    vs = get_vector_store(vector_db_dir, collection_name)
+    retriever = HybridRetriever(
+        embedder=embedder,
+        vector_store=vs,
+        top_k_dense=top_k_dense,
+        top_k_bm25=top_k_bm25,
+        top_k_final=top_k_final,
+        use_bm25=use_bm25,
+    )
+    retriever.refresh_bm25()
+    return retriever
+
+
+def invalidate_retriever() -> None:
+    """Drop cached retrievers so the next question rebuilds BM25 from the
+    freshly ingested collection. Call after any ingestion completes."""
+    get_retriever.clear()
+
+
 def get_registry() -> CompanyRegistry:
     return CompanyRegistry(get_settings().registry_path)
 
@@ -289,9 +330,21 @@ def render_upload_and_ingest(company_id: str) -> None:
         )
         if uploaded and st.button("Save uploaded files", key=f"save_{company_id}"):
             settings.ensure_dirs()
+            saved, rejected = 0, []
             for f in uploaded:
-                (settings.raw_pdfs_dir / f.name).write_bytes(f.getbuffer())
-            st.success(f"Saved {len(uploaded)} file(s) to raw_pdfs/. Click Ingest below.")
+                # H3 fix: f.name is client-controlled — "../../evil.pdf"
+                # would escape raw_pdfs/. Strip directories and allowlist
+                # safe characters only.
+                safe = re.sub(r"[^a-zA-Z0-9_.\-]", "_", Path(f.name).name)
+                if not safe or safe != Path(f.name).name or not safe.lower().endswith(".pdf"):
+                    rejected.append(f.name)
+                    continue
+                (settings.raw_pdfs_dir / safe).write_bytes(f.getbuffer())
+                saved += 1
+            if saved:
+                st.success(f"Saved {saved} file(s) to raw_pdfs/. Click Ingest below.")
+            if rejected:
+                st.warning(f"Rejected unsafe filenames: {', '.join(rejected)}")
 
         if st.button("▶️ Run ingestion", key=f"ingest_{company_id}"):
             run_ingestion_ui(company_id)
@@ -406,21 +459,28 @@ def answer_question(
     key = cache_key(company_id, question, top_k, use_llm, llm_mode, ollama_model, groq_model)
 
     def compute():
-        embedder = get_embedder(company_config.embedding.model, company_config.embedding.device)
-        retriever = HybridRetriever(
-            embedder=embedder,
-            vector_store=vector_store,
-            top_k_dense=company_config.retrieval.top_k,
-            top_k_bm25=company_config.retrieval.top_k,
-            top_k_final=top_k,
-            use_bm25=company_config.retrieval.use_bm25,
+        # H4: one cached retriever per company — no more per-question
+        # HybridRetriever construction + full-collection BM25 rebuild.
+        retriever = get_retriever(
+            company_id,
+            company_config.embedding.model,
+            company_config.embedding.device,
+            str(vector_store.persist_dir),
+            vector_store.collection_name,
+            company_config.retrieval.top_k,
+            company_config.retrieval.top_k,
+            top_k,
+            company_config.retrieval.use_bm25,
         )
-        hits = retriever.search(question)
         reranker = get_reranker(company_config.retrieval.reranker_model) if company_config.retrieval.use_reranker else None
-        ranked = reranker.rerank(question, hits, top_k=top_k) if reranker else hits
-        citations = build_citations(ranked)
 
         if not use_llm:
+            # H2: apply the SAME score-gap filter the pipeline uses, so the
+            # displayed passages are exactly what an LLM answer would cite.
+            hits = retriever.search(question)
+            ranked = reranker.rerank(question, hits, top_k=top_k) if reranker else hits[:top_k]
+            ranked = apply_score_gap_filter(ranked, DEFAULT_MAX_SCORE_GAP)
+            citations = build_citations(ranked)
             answer = "Here are the most relevant passages I found (enable **Generate LLM answer** for a synthesized response):"
             return {"answer": answer, "citations": citations}
 
@@ -431,11 +491,19 @@ def answer_question(
             llm = OllamaClient(base_url=ollama_url, model=ollama_model)
             backend_label = f"Ollama ({ollama_model}) at {ollama_url}"
 
+        # H2: single QAPipeline call — its internal retrieval + gap filter
+        # runs once, and we reuse result.citations so the [n] markers in the
+        # answer point at exactly the sources displayed below.
         qa = QAPipeline(retriever=retriever, reranker=reranker, llm_client=llm, rerank_top_k=top_k)
         try:
             result = asyncio.run(qa.answer(question, conversation_history=history))
             answer = result.answer
+            citations = [citation_to_dict(c) for c in result.citations]
         except Exception as exc:  # noqa: BLE001
+            hits = retriever.search(question)
+            ranked = reranker.rerank(question, hits, top_k=top_k) if reranker else hits[:top_k]
+            ranked = apply_score_gap_filter(ranked, DEFAULT_MAX_SCORE_GAP)
+            citations = build_citations(ranked)
             answer = (
                 f"⚠️ Couldn't reach {backend_label} ({exc}). "
                 "Showing retrieved chunks instead — check the connection, "
@@ -461,6 +529,21 @@ def extract_conversation_pairs(messages: list[dict]) -> list[tuple[str, str]]:
             pairs.append((pending_question, msg["content"]))
             pending_question = None
     return pairs
+
+
+def citation_to_dict(c) -> dict:
+    """Convert a QAPipeline Citation dataclass to the dict shape the UI renders.
+
+    Used by the H2 fix: the LLM path reuses QAPipeline's own citations so
+    [n] markers match the displayed sources exactly.
+    """
+    return {
+        "marker": c.marker,
+        "source": Path(c.source_path).name,
+        "page": c.page_number,
+        "snippet": c.chunk_text[:300],
+        "score": c.score,
+    }
 
 
 def build_citations(ranked: list[dict]) -> list[dict]:
@@ -652,10 +735,10 @@ def render_history(company_id: str) -> None:
                 render_citations(entry.citations)
             c1, c2 = st.columns([1, 1])
             if c1.button("Toggle star", key=f"star_{entry.id}"):
-                store.toggle_star(entry.id)
+                store.toggle_star(entry.id, company_id)
                 st.rerun()
             if c2.button("Delete", key=f"del_{entry.id}"):
-                store.delete(entry.id)
+                store.delete(entry.id, company_id)
                 st.rerun()
 
 

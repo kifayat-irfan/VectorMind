@@ -107,6 +107,24 @@ DEFAULT_HISTORY_TURNS_FOR_GENERATION = 1
 ConversationTurn = tuple[str, str]
 
 
+def apply_score_gap_filter(
+    ranked: list[dict[str, Any]], max_score_gap: Optional[float]
+) -> list[dict[str, Any]]:
+    """Drop chunks scoring far worse than the reranker's own top match.
+
+    Extracted as a module function (was inline in QAPipeline.answer) so the
+    Streamlit UI applies the *identical* filter when it shows retrieved
+    passages without an LLM answer — previously the UI displayed the
+    unfiltered top-k while the pipeline answered from the filtered list,
+    so citation [n] markers pointed at the wrong sources (H2).
+    """
+    if not ranked or max_score_gap is None:
+        return ranked
+    top_score = ranked[0].get("rerank_score", 0.0)
+    floor = top_score - max_score_gap
+    return [r for r in ranked if r.get("rerank_score", 0.0) >= floor]
+
+
 @dataclass
 class Citation:
     marker: int
@@ -154,10 +172,7 @@ class QAPipeline:
 
         if self.reranker is not None:
             ranked = self.reranker.rerank(standalone_question, candidates, top_k=self.rerank_top_k)
-            if ranked and self.max_score_gap is not None:
-                top_score = ranked[0].get("rerank_score", 0.0)
-                floor = top_score - self.max_score_gap
-                ranked = [r for r in ranked if r.get("rerank_score", 0.0) >= floor]
+            ranked = apply_score_gap_filter(ranked, self.max_score_gap)
         else:
             ranked = candidates[: self.rerank_top_k]
 

@@ -102,10 +102,10 @@ async def process_one_pdf(
     tmp_path.write_text(doc.markdown, encoding="utf-8")
     tmp_path.replace(clean_path)  # atomic write
 
-    # Remove any previously-indexed chunks for this file before re-indexing —
-    # otherwise re-processing a changed PDF leaves stale chunks from the old version behind.
-    vector_store.delete_by_source(str(pdf_path))
-
+    # NOTE (C1 fix): index the new chunks FIRST, then remove stale ones.
+    # The old code deleted by source *before* embedding/upsert — if either
+    # threw, the file's chunks were gone from the index while the manifest
+    # still said OK, so the PDF was skipped forever with no signal.
     chunks = chunker.split(doc.markdown, metadata={"source_path": str(pdf_path), "company_id": company_id})
     if chunks:
         texts = [c.text for c in chunks]
@@ -123,6 +123,10 @@ async def process_one_pdf(
             for c in chunks
         ]
         vector_store.upsert(ids=ids, embeddings=vectors, documents=texts, metadatas=metadatas)
+
+        # Now remove chunks from previous versions of this same file
+        # (same source_path, different file hash) — stale data can't linger.
+        vector_store.delete_stale_versions(str(pdf_path), file_hash)
 
     await manifest.add(
         ManifestEntry(

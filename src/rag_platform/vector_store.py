@@ -73,6 +73,19 @@ class VectorStore:
         """Remove every chunk belonging to one source file — used when a PDF is re-processed after a hash change."""
         self.collection.delete(where={"source_path": source_path})
 
+    def delete_stale_versions(self, source_path: str, current_sha256: str) -> None:
+        """Remove chunks of previous versions of the same file, keeping the
+        just-upserted current version. Called AFTER a successful upsert so a
+        mid-ingestion failure can never leave the file with zero chunks."""
+        self.collection.delete(
+            where={
+                "$and": [
+                    {"source_path": source_path},
+                    {"file_sha256": {"$ne": current_sha256}},
+                ]
+            }
+        )
+
     def count(self) -> int:
         return self.collection.count()
 

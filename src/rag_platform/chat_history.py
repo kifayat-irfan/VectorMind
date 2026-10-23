@@ -84,13 +84,29 @@ class ChatHistoryStore:
             rows = conn.execute(query, params).fetchall()
         return [self._row_to_entry(r) for r in rows]
 
-    def toggle_star(self, entry_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute("UPDATE conversations SET starred = 1 - starred WHERE id = ?", (entry_id,))
+    def toggle_star(self, entry_id: int, company_id: str) -> bool:
+        """Toggle star, scoped to the owning tenant (H7 fix).
 
-    def delete(self, entry_id: int) -> None:
+        IDs are sequential SQLite integers — trivially enumerable — so the
+        company_id guard is what stops one tenant's UI from starring or
+        deleting another tenant's rows.
+
+        Returns True if a row was actually toggled.
+        """
         with self._connect() as conn:
-            conn.execute("DELETE FROM conversations WHERE id = ?", (entry_id,))
+            cur = conn.execute(
+                "UPDATE conversations SET starred = 1 - starred WHERE id = ? AND company_id = ?",
+                (entry_id, company_id),
+            )
+            return cur.rowcount > 0
+
+    def delete(self, entry_id: int, company_id: str) -> bool:
+        """Delete scoped to the owning tenant (H7 fix). Returns True if deleted."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM conversations WHERE id = ? AND company_id = ?", (entry_id, company_id)
+            )
+            return cur.rowcount > 0
 
     @staticmethod
     def _row_to_entry(row) -> ChatEntry:
