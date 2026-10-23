@@ -61,7 +61,7 @@ from rag_platform.retriever import HybridRetriever  # noqa: E402
 from rag_platform.vector_store import VectorStore  # noqa: E402
 from rag_platform.voice import GroqTranscriptionError, GroqWhisperClient  # noqa: E402
 
-st.set_page_config(page_title="RAG Platform", page_icon="📊", layout="wide")
+st.set_page_config(page_title="VectorMind", page_icon="🧠", layout="wide")
 
 # ---------------------------------------------------------------------- #
 # Refined defaults for a new company's template.yaml, per the tuning
@@ -648,6 +648,20 @@ def render_chat(company_id: str) -> None:
     if history_key not in st.session_state:
         st.session_state[history_key] = []
 
+    # Suggested starter questions for first-time visitors (portfolio demo).
+    if not st.session_state[history_key]:
+        st.caption("💡 Try one of these:")
+        suggestions = [
+            "What is this documentation about? Give me an overview.",
+            "What are the key steps to get started?",
+            "What are the most important concepts I should understand?",
+        ]
+        cols = st.columns(3)
+        for col, q in zip(cols, suggestions):
+            if col.button(q, key=f"suggest_{company_id}_{q[:20]}", use_container_width=True):
+                st.session_state[f"prefill_{company_id}"] = q
+                st.rerun()
+
     for msg in st.session_state[history_key]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -655,7 +669,8 @@ def render_chat(company_id: str) -> None:
                 render_citations(msg["citations"])
 
     voice_text = render_voice_input(company_id)
-    question = voice_text or st.chat_input("Ask a question about this company's documentation...")
+    prefill = st.session_state.pop(f"prefill_{company_id}", None)
+    question = voice_text or prefill or st.chat_input("Ask a question about this company's documentation...")
     if not question:
         return
 
@@ -748,16 +763,22 @@ def main() -> None:
     selected_id = render_sidebar()
 
     if selected_id is None:
-        st.title("📊 Local-First Multi-Tenant RAG Platform")
+        st.title("🧠 VectorMind")
+        st.markdown("### Ask questions. Get answers from *your* docs — with citations.")
         st.markdown(
             """
-            Register a company in the sidebar to get started. Each company gets:
-            - Its own isolated data directory and vector store (zero cross-tenant leakage)
-            - Local-first PDF ingestion (SHA-256 dedup, resumable)
-            - Hybrid search (dense BGE embeddings + BM25, fused with RRF) + cross-encoder reranking
-            - A relevance-gap filter tuned from real production testing, not guesswork
-            - Optional LLM answer generation with page-accurate citations, via Ollama or Groq
-            - Multi-turn conversation memory, cross-company comparison, chat history, voice input
+            VectorMind is a **local-first, multi-tenant RAG platform**: point it at a company's
+            PDF documentation and ask questions in plain English. Every answer cites the
+            exact source file and page — no black-box guessing.
+
+            - 🔒 **Zero cross-tenant leakage** — each company's docs live in a fully isolated vector store
+            - 🔍 **Hybrid search** — dense BGE embeddings + BM25, fused with RRF, then cross-encoder reranking
+            - 🎯 **Relevance-gap filter** — tuned from real production testing, not guesswork
+            - 💬 **Multi-turn memory** — follow-ups like "how do I fix it?" just work
+            - 🎙️ **Voice input**, 📊 **cross-company comparison**, 📜 **searchable chat history**
+            - 🏠 **Runs offline** via Ollama, with Groq cloud fallback for public deployments
+
+            👈 **Pick a company in the sidebar** to start asking questions.
             """
         )
         return
